@@ -1,0 +1,301 @@
+---
+- name: Ethereum Validator Node OS Configuration, Security Hardening, and Docker Installation
+  hosts: validator_node
+  become: true
+  gather_facts: yes
+  vars:
+    eth_user: "fester"
+    timezone: "Asia/Bangkok"
+    ssh_public_key: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
+    logwatch_email: "syhester@gmail.com"
+    required_ports: "30303,9000,9001"
+    mount_point: "/mnt/data"
+    drive_model: "Samsung SSD 990 PRO 4TB"
+    filesystem_type: "ext4"
+    local_password_file: "./ethereum_password.txt"
+
+  tasks:
+    # Docker Installation Tasks
+    - name: Update apt package index
+      apt:
+        update_cache: yes
+        force_apt_get: yes
+
+    - name: Install packages to allow apt to use a repository over HTTPS
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - software-properties-common
+        state: present
+
+    - name: Add Docker's official GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Set up the Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+        update_cache: yes
+
+    - name: Install Docker Engine
+      apt:
+        name: docker-ce
+        state: latest
+
+    - name: Start and enable Docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Add user to Docker group
+      user:
+        name: "{{ eth_user }}"
+        groups: docker
+        append: yes
+        state: present
+
+    # Ethereum Validator Node Configuration and Security Hardening
+    - name: Check if the user already exists
+      command: id -u {{ eth_user }}
+      register: user_exists
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Generate password if user does not exist
+      set_fact:
+        eth_user_password: "fester"
+      when: user_exists.rc != 0
+
+    - name: Display generated password for verification
+      debug:
+        msg: "Generated password for user '{{ eth_user }}': {{ eth_user_password }}"
+      when: user_exists.rc != 0
+
+    - name: Save generated password to a local file
+      copy:
+        content: "Generated password for user '{{ eth_user }}': {{ eth_user_password }}"
+        dest: "{{ local_password_file }}"
+        mode: '0600'
+      when: user_exists.rc != 0
+
+    - name: Create a non-root user with sudo privileges and set generated password
+      user:
+        name: "{{ eth_user }}"
+        shell: /bin/bash
+        create_home: yes
+        groups: sudo
+        password: "{{ eth_user_password | password_hash('sha512') }}"
+      when: user_exists.rc != 0
+
+    - name: Ensure all packages are up to date
+      apt:
+        update_cache: yes
+        upgrade: dist
+      notify:
+        - Reboot system
+
+    - name: Install necessary packages
+      apt:
+        name:
+          - git
+          - ufw
+          - curl
+          - ccze
+          - jq
+          - chrony
+          - fail2ban
+          - unattended-upgrades
+          - logwatch
+          - apparmor
+          - ncdu
+          - cron
+          - vim
+          - netcat-openbsd
+        state: present
+
+    - name: Remove unnecessary packages
+      apt:
+        name: "{{ item }}"
+        state: absent
+      loop:
+        - autoremove
+        - autoclean
+
+    - name: Get current timezone
+      command: "timedatectl show -p Timezone --value"
+      register: current_timezone
+      changed_when: false
+
+    - name: Configure timezone if it differs
+      command: "timedatectl set-timezone {{ timezone }}"
+      when: current_timezone.stdout != timezone
+
+    - name: Verify chrony synchronization source
+      command: "chronyc sources"
+      changed_when: false
+
+    - name: Verify chrony tracking
+      command: "chronyc tracking"
+      changed_when: false
+
+    # JWT Secret Generation
+    - name: Create secrets directory
+      file:
+        path: /secrets
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+    - name: Generate JWT secret in hex format if not exists
+      shell: "openssl rand -hex 32 | tr -d '\n' > /secrets/jwt.hex"
+      args:
+        creates: "/secrets/jwt.hex"
+      register: jwt_generation_result
+
+    - name: Display JWT secret generation result
+      debug:
+        msg: "JWT secret generated at /secrets/jwt.hex"
+      when: jwt_generation_result is changed
+
+    # UFW and SSH Configuration
+    - name: Configure UFW to deny all incoming traffic
+      ufw:
+        default: deny
+        direction: incoming
+
+    - name: Configure UFW to allow all outgoing traffic
+      ufw:
+        default: allow
+        direction: outgoing
+
+    - name: Allow SSH in UFW
+      ufw:
+        rule: allow
+        port: 22
+        proto: tcp
+        comment: 'Allow SSH port'
+
+    - name: Allow Grafana TCP Port 30000
+      ufw:
+        rule: allow
+        port: 30000
+        proto: tcp
+        comment: 'Allow Grafana TCP port'
+
+    - name: Allow Execution Client TCP Port 30303
+      ufw:
+        rule: allow
+        port: 30303
+        proto: tcp
+        comment: 'Allow execution client TCP port'
+    
+    - name: Allow Execution Client UDP Port 30303
+      ufw:
+        rule: allow
+        port: 30303
+        proto: udp
+        comment: 'Allow execution client UDP port'
+
+    - name: Allow Consensus Client TCP Port 9000
+      ufw:
+        rule: allow
+        port: 9000
+        proto: tcp
+        comment: 'Allow consensus client TCP port'
+
+    - name: Allow Consensus Client UDP Port 9000
+      ufw:
+        rule: allow
+        port: 9000
+        proto: udp
+        comment: 'Allow consensus client UDP port'
+
+    - name: Allow Lighthouse Client Quic Port 9001 (UDP)
+      ufw:
+        rule: allow
+        port: 9001
+        proto: udp
+        comment: 'Allow lighthouse client quic port'
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+
+    - name: Configure Fail2ban for SSH
+      blockinfile:
+        path: /etc/fail2ban/jail.local
+        create: yes
+        block: |
+          [sshd]
+          enabled = true
+          port = 22
+          filter = sshd
+          logpath = /var/log/auth.log
+          maxretry = 3
+
+    - name: Restart Fail2ban
+      service:
+        name: fail2ban
+        state: started
+        enabled: true
+
+    - name: Add SSH public key for {{ eth_user }}
+      authorized_key:
+        user: "{{ eth_user }}"
+        state: present
+        key: "{{ ssh_public_key }}"
+
+    - name: Disable SSH password authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+        state: present
+
+    - name: Enable SSH key-based authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PubkeyAuthentication'
+        line: 'PubkeyAuthentication yes'
+        state: present
+
+    - name: Disable root login over SSH
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin no'
+        state: present
+
+    - name: Enable automatic security updates
+      lineinfile:
+        path: /etc/apt/apt.conf.d/20auto-upgrades
+        line: 'APT::Periodic::Unattended-Upgrade "1";'
+
+    - name: Enable and start AppArmor for process isolation
+      service:
+        name: apparmor
+        state: started
+        enabled: yes
+
+    - name: Set up daily Logwatch emails for log auditing
+      cron:
+        name: "Daily Logwatch"
+        job: "/usr/sbin/logwatch --output mail --mailto {{ logwatch_email }} --detail high"
+        state: present
+        minute: "0"
+        hour: "0"
+
+  handlers:
+    - name: Reboot system
+      reboot:
+        msg: "Rebooting to apply updates."
+
+    - name: Restart SSH
+      service:
+        name: ssh
+        state: restarted
