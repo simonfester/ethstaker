@@ -1,0 +1,136 @@
+name: 'holesky'
+
+services:
+  reth:
+    restart: unless-stopped
+    image: ghcr.io/paradigmxyz/reth
+    ports:
+      - '9092:9092'        # internal metrics port
+      - '30303:30303/tcp'  # Ethereum P2P networking (WAN peering)
+      - '30303:30303/udp'  # Ethereum P2P networking (WAN peering)
+      - '8545:8545'        # internal http rpc port
+      - '8551:8551'        # internal engine port -> consensus client
+    volumes:
+      - /mnt/data/reth/mainnet:/root/.local/share/reth/mainnet  # Map host /mnt/data/mainnet to container's .local/share/reth/mainnet
+      - /mnt/data/reth/sepolia:/root/.local/share/reth/sepolia  # Map host /mnt/data/sepolia to container's .local/share/reth/sepolia
+      - /mnt/data/reth/holesky:/root/.local/share/reth/holesky  # Map host /mnt/data/holesky to container's .local/share/reth/holesky
+      - /mnt/data/reth/logs:/root/logs  # Map host /mnt/data/logs to container's logs directory
+      - /secrets:/secrets:ro  # Mount the host's /secrets directory as read-only
+    pid: host
+    command: >
+      node
+      --chain holesky
+      --metrics 0.0.0.0:9092
+      --log.file.directory /root/logs
+      --authrpc.addr 0.0.0.0
+      --authrpc.port 8551
+      --authrpc.jwtsecret /secrets/jwt.hex
+      --http --http.addr 0.0.0.0 --http.port 8545
+      --http.api "eth,net,web3"
+
+  prometheus:
+    restart: unless-stopped
+    image: prom/prometheus
+    depends_on:
+      - reth
+    ports:
+      - 9090:9090
+    volumes:
+      - /mnt/data/prometheus/:/etc/prometheus/
+      - /mnt/data/prometheus:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+
+  grafana:
+    restart: unless-stopped
+    image: grafana/grafana:latest
+    depends_on:
+      - reth
+      - prometheus
+    ports:
+      - 3000:3000
+    environment:
+      PROMETHEUS_URL: http://prometheus:9090
+    volumes:
+      - /mnt/data/grafana:/var/lib/grafana
+      - /mnt/data/grafana/datasources:/etc/grafana/provisioning/datasources
+      - /mnt/data/grafana/dashboards:/etc/grafana/provisioning_temp/dashboards
+    entrypoint: >
+      sh -c "cp -r /etc/grafana/provisioning_temp/dashboards/. /etc/grafana/provisioning/dashboards &&
+             find /etc/grafana/provisioning/dashboards/ -name '*.json' -exec sed -i 's/$${DS_PROMETHEUS}/Prometheus/g' {} \+ &&
+             /run.sh"
+  
+  lighthouse:
+    restart: unless-stopped  # Restart the container unless explicitly stopped
+    image: sigp/lighthouse:latest  # Use the official Lighthouse Docker image
+    depends_on:
+      - reth  # Ensure the execution client (Reth) is running before Lighthouse starts
+    ports:
+      - '5052:5052/tcp'  # Lighthouse Beacon Node HTTP API server port
+      - '5053:5053/tcp'  # Additional RPC port (custom use)
+      - '5054:5054/tcp'  # Metrics port for monitoring Lighthouse
+      - '9000:9000/tcp'  # Peer-to-peer communication over TCP
+      - '9000:9000/udp'  # Peer-to-peer communication over UDP
+      - '9001:9001/udp'  # QUIC port for modern P2P networking
+    volumes:
+      - /mnt/data/lighthouse:/root/.lighthouse
+      - /secrets:/secrets:ro  # Mount secrets directory as read-only
+    command: >
+      lighthouse bn
+      --network holesky 
+      --http --http-address 0.0.0.0
+      --execution-endpoint http://reth:8551
+      --metrics --metrics-address 0.0.0.0
+      --execution-jwt /secrets/jwt.hex
+      --checkpoint-sync-url https://holesky-checkpoint-sync.stakely.io
+      --checkpoint-sync-url-timeout 300
+      --disable-backfill-rate-limiting
+      --gui
+  
+  lighthouse-validator:
+    restart: unless-stopped
+    image: sigp/lighthouse:latest
+    depends_on:
+      - reth
+      - lighthouse
+    volumes:
+      - /mnt/data/lighthouse/validators:/root/.lighthouse/validators:ro
+      - /mnt/data/lighthouse:/root/.lighthouse
+    command: >
+      lighthouse vc
+      --network holesky
+      --datadir /root/.lighthouse
+      --beacon-nodes http://lighthouse:5052
+      --enable-doppelganger-protection
+
+  siren:
+    restart: unless-stopped
+    image: sigp/siren:latest
+    depends_on:
+      - lighthouse
+      - lighthouse-validator
+    ports:
+      - 4443:443
+    env_file:
+      - /mnt/data/siren/.siren_env
+
+  metrics-exporter:
+    restart: unless-stopped
+    image: ethpandaops/ethereum-metrics-exporter:debian-latest
+    depends_on:
+      - reth
+      - lighthouse
+    ports:
+      - 9091:9091  # metrics
+    volumes:
+      - /mnt/data/ethereum-metrics-exporter/config.yaml:/root/config.yaml
+    command:
+      - --config=/root/config.yaml
+      - --metrics-port=9091
+
+volumes:
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local

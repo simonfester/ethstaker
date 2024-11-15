@@ -9,7 +9,7 @@
     ssh_public_key: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
     logwatch_email: "syhester@gmail.com"
     required_ports: "30303,9000,9001"
-    mount_point: "/mnt/data"
+    mount_point: "/mnt/data/"
     drive_model: "Samsung SSD 990 PRO 4TB"
     filesystem_type: "ext4"
     local_password_file: "./ethereum_password.txt"
@@ -143,23 +143,15 @@
       command: "chronyc tracking"
       changed_when: false
 
-    # JWT Secret Generation
-    - name: Create secrets directory
-      file:
-        path: /secrets
-        state: directory
-        owner: root
-        group: root
-        mode: '0755'
     - name: Generate JWT secret in hex format if not exists
-      shell: "openssl rand -hex 32 | tr -d '\n' > /secrets/jwt.hex"
+      shell: "openssl rand -hex 32 | tr -d '\n' > {{ mount_point }}secrets/jwt.hex"
       args:
-        creates: "/secrets/jwt.hex"
+        creates: "{{ mount_point }}secrets/jwt.hex"
       register: jwt_generation_result
 
     - name: Display JWT secret generation result
       debug:
-        msg: "JWT secret generated at /secrets/jwt.hex"
+        msg: "JWT secret generated at {{ mount_point }}secrets/jwt.hex"
       when: jwt_generation_result is changed
 
     # UFW and SSH Configuration
@@ -289,7 +281,22 @@
         state: present
         minute: "0"
         hour: "0"
-
+    
+    - name: Ensure Validator directories exist
+      file:
+        path: "{{ item.path }}"
+        state: directory
+        mode: "{{ item.mode }}"
+        owner: root
+        group: root
+    with_items:
+      - { path: "{{ mount_point }}"lighthouse/validators, mode: '0755' }
+      - { path: "{{ mount_point }}"lighthouse/validators/keys, mode: '0700' }
+      - { path: "{{ mount_point }}"lighthouse/validators/secrets, mode: '0700' }
+      - { path: "{{ mount_point }}"siren, mode: '0755' }
+      - { path: "{{ mount_point }}"reth, mode: '0755' }
+      - { path: "{{ mount_point }}"secrets, mode: '0755' }
+      
   handlers:
     - name: Reboot system
       reboot:
