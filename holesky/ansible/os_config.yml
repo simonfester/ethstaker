@@ -143,17 +143,6 @@
       command: "chronyc tracking"
       changed_when: false
 
-    - name: Generate JWT secret in hex format if not exists
-      shell: "openssl rand -hex 32 | tr -d '\n' > {{ mount_point }}secrets/jwt.hex"
-      args:
-        creates: "{{ mount_point }}secrets/jwt.hex"
-      register: jwt_generation_result
-
-    - name: Display JWT secret generation result
-      debug:
-        msg: "JWT secret generated at {{ mount_point }}secrets/jwt.hex"
-      when: jwt_generation_result is changed
-
     # UFW and SSH Configuration
     - name: Configure UFW to deny all incoming traffic
       ufw:
@@ -171,6 +160,13 @@
         port: 22
         proto: tcp
         comment: 'Allow SSH port'
+
+    - name: Allow Lighthouse HTTP API port 5052
+      ufw:
+        rule: allow
+        port: 5052
+        proto: tcp
+        comment: 'Allow Lighthouse HTTP API port'
 
     - name: Allow Grafana TCP Port 30000
       ufw:
@@ -289,13 +285,24 @@
         mode: "{{ item.mode }}"
         owner: root
         group: root
-    with_items:
-      - { path: "{{ mount_point }}"lighthouse/validators, mode: '0755' }
-      - { path: "{{ mount_point }}"lighthouse/validators/keys, mode: '0700' }
-      - { path: "{{ mount_point }}"lighthouse/validators/secrets, mode: '0700' }
-      - { path: "{{ mount_point }}"siren, mode: '0755' }
-      - { path: "{{ mount_point }}"reth, mode: '0755' }
-      - { path: "{{ mount_point }}"secrets, mode: '0755' }
+      with_items:
+        - { path: "{{ mount_point }}lighthouse/validators", mode: '0755' }
+        - { path: "{{ mount_point }}lighthouse/validators/keys", mode: '0700' }
+        - { path: "{{ mount_point }}lighthouse/validators/secrets", mode: '0700' }
+        - { path: "{{ mount_point }}siren", mode: '0755' }
+        - { path: "{{ mount_point }}reth", mode: '0755' }
+        - { path: "{{ mount_point }}secrets", mode: '0755' }
+    
+    - name: Generate JWT secret in hex format if not exists
+      shell: "openssl rand -hex 32 | tr -d '\n' > {{ mount_point }}secrets/jwt.hex"
+      args:
+        creates: "{{ mount_point }}secrets/jwt.hex"
+      register: jwt_generation_result
+
+    - name: Display JWT secret generation result
+      debug:
+        msg: "JWT secret generated at {{ mount_point }}secrets/jwt.hex"
+      when: jwt_generation_result is changed
       
   handlers:
     - name: Reboot system
