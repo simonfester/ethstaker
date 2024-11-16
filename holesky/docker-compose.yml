@@ -15,7 +15,7 @@ services:
       - /mnt/data/reth/sepolia:/root/.local/share/reth/sepolia  # Map host /mnt/data/sepolia to container's .local/share/reth/sepolia
       - /mnt/data/reth/holesky:/root/.local/share/reth/holesky  # Map host /mnt/data/holesky to container's .local/share/reth/holesky
       - /mnt/data/reth/logs:/root/logs  # Map host /mnt/data/logs to container's logs directory
-      - /secrets:/secrets:ro  # Mount the host's /secrets directory as read-only
+      - /mnt/data/secrets:/secrets:ro  # Mount the host's /secrets directory as read-only
     pid: host
     command: >
       node
@@ -75,7 +75,7 @@ services:
       - '9001:9001/udp'  # QUIC port for modern P2P networking
     volumes:
       - /mnt/data/lighthouse:/root/.lighthouse
-      - /secrets:/secrets:ro  # Mount secrets directory as read-only
+      - /mnt/data/secrets:/secrets:ro  # Mount secrets directory as read-only
     command: >
       lighthouse bn
       --network holesky 
@@ -95,13 +95,15 @@ services:
       - reth
       - lighthouse
     volumes:
-      - /mnt/data/lighthouse/validators:/root/.lighthouse/validators:ro
+      - /mnt/data/lighthouse/validators:/root/.lighthouse/validators
       - /mnt/data/lighthouse:/root/.lighthouse
     command: >
       lighthouse vc
       --network holesky
       --datadir /root/.lighthouse
       --beacon-nodes http://lighthouse:5052
+      --http
+      --init-slashing-protection
       --enable-doppelganger-protection
 
   siren:
@@ -113,7 +115,7 @@ services:
     ports:
       - 4443:443
     env_file:
-      - /mnt/data/siren/.siren_env
+      - /mnt/data/siren/siren_env
 
   metrics-exporter:
     restart: unless-stopped
