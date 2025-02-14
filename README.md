@@ -3,5 +3,4 @@
 Short Version
 
 create ssh keys
-run ansible playbook
-start docker compose
+run ansible playbook to configure os first
