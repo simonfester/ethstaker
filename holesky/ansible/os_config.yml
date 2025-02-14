@@ -4,10 +4,10 @@
   become: true
   gather_facts: yes
   vars:
-    eth_user: "fester"
+    eth_user: "mandem"
     timezone: "Asia/Bangkok"
     ssh_public_key: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
-    logwatch_email: "syhester@gmail.com"
+    logwatch_email: "simonfester@icloud.com"
     required_ports: "30303,9000,9001"
     mount_point: "/mnt/data/"
     drive_model: "Samsung SSD 990 PRO 4TB"
@@ -68,7 +68,7 @@
 
     - name: Generate password if user does not exist
       set_fact:
-        eth_user_password: "fester"
+        eth_user_password: "mandem"
       when: user_exists.rc != 0
 
     - name: Display generated password for verification
