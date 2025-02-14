@@ -1,6 +1,6 @@
 ### Ethstaker
 
-Install Ansible OSX
+Install Homebrew on OSX
 
 brew --version
 
@@ -16,10 +16,4 @@ ansible --version
 
 ansible localhost -m ping --connection=local
 
-ansible-playbook -i hosts.ini os_config.yml
-
-
-Short Version
-
-create ssh keys
-run ansible playbook to configure os first
+ansible-playbook -i hosts.ini os_config.yml --ask-pass --ask-become-pass
