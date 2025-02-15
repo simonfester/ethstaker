@@ -1,0 +1,84 @@
+---
+- name: Ethereum Validator Node Client Configuration
+  hosts: validator_node
+  become: true
+  gather_facts: yes
+  vars:
+    eth_user: "mandem"
+    required_ports: "30303,9000,9001"
+    mount_point: "/mnt/data/"
+  tasks:
+    - name: Ensure Validator directories exist
+      file:
+      path: "{{ item.path }}"
+      state: directory
+      mode: "{{ item.mode }}"
+      owner: root
+      group: root
+      with_items:
+        - { path: "{{ mount_point }}lighthouse/validators", mode: '0755' }
+        - { path: "{{ mount_point }}lighthouse/validators/keys", mode: '0700' }
+        - { path: "{{ mount_point }}lighthouse/validators/secrets", mode: '0700' }
+        - { path: "{{ mount_point }}siren", mode: '0755' }
+        - { path: "{{ mount_point }}reth", mode: '0755' }
+        - { path: "{{ mount_point }}secrets", mode: '0755' }
+    
+    - name: Generate JWT secret in hex format if not exists
+      shell: "openssl rand -hex 32 | tr -d '\n' > {{ mount_point }}secrets/jwt.hex"
+      args:
+      creates: "{{ mount_point }}secrets/jwt.hex"
+      register: jwt_generation_result
+
+    - name: Display JWT secret generation result
+      debug:
+        msg: "JWT secret generated at {{ mount_point }}secrets/jwt.hex"
+      when: jwt_generation_result is changed
+
+    - name: Allow Lighthouse HTTP API port 5052
+      ufw:
+        rule: allow
+        port: 5052
+        proto: tcp
+        comment: 'Allow Lighthouse HTTP API port'
+
+    - name: Allow Grafana TCP Port 30000
+      ufw:
+        rule: allow
+        port: 30000
+        proto: tcp
+        comment: 'Allow Grafana TCP port'
+
+    - name: Allow Execution Client TCP Port 30303
+      ufw:
+        rule: allow
+        port: 30303
+        proto: tcp
+        comment: 'Allow execution client TCP port'
+    
+    - name: Allow Execution Client UDP Port 30303
+      ufw:
+        rule: allow
+        port: 30303
+        proto: udp
+        comment: 'Allow execution client UDP port'
+
+    - name: Allow Consensus Client TCP Port 9000
+      ufw:
+        rule: allow
+        port: 9000
+        proto: tcp
+        comment: 'Allow consensus client TCP port'
+
+    - name: Allow Consensus Client UDP Port 9000
+      ufw:
+        rule: allow
+        port: 9000
+        proto: udp
+        comment: 'Allow consensus client UDP port'
+
+    - name: Allow Lighthouse Client Quic Port 9001 (UDP)
+      ufw:
+        rule: allow
+        port: 9001
+        proto: udp
+        comment: 'Allow lighthouse client quic port'

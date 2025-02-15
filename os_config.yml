@@ -4,18 +4,118 @@
   become: true
   gather_facts: yes
   vars:
+    upgrade_os: "flase"
     eth_user: "mandem"
     timezone: "Asia/Bangkok"
-    ssh_public_key: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
+    ssh_public_key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
     logwatch_email: "simonfester@icloud.com"
     required_ports: "30303,9000,9001"
     mount_point: "/mnt/data/"
     drive_model: "Samsung SSD 990 PRO 4TB"
     filesystem_type: "ext4"
-    local_password_file: "./ethereum_password.txt"
 
   tasks:
-    # Docker Installation Tasks
+    - name: Find the 3.6TB Samsung SSD disk
+      command: "lsblk -J -o NAME,SIZE,MODEL,TYPE,MOUNTPOINT,FSTYPE"
+      register: lsblk_output
+      changed_when: false
+
+    - name: Parse the correct 3.6TB Samsung SSD disk
+      set_fact:
+        data_disk: >-
+          {{
+            (lsblk_output.stdout | from_json).blockdevices
+            | selectattr('type', 'equalto', 'disk')
+            | selectattr('size', 'equalto', '3.6T')
+            | selectattr('model', 'search', 'Samsung SSD 990 PRO')
+            | map(attribute='name')
+            | first | default('')
+          }}
+
+    - name: Fail if the expected 3.6TB Samsung SSD is not found
+      fail:
+        msg: "No 3.6TB Samsung SSD 990 PRO disk found!"
+      when: data_disk == ''
+
+    - name: Set full disk path
+      set_fact:
+        data_disk_path: "/dev/{{ data_disk }}"
+
+    - name: Debug selected disk
+      debug:
+        msg: "Selected disk for /mnt/data: {{ data_disk_path }}"
+
+    - name: Check if {{ data_disk_path }} is already formatted
+      command: "blkid {{ data_disk_path }}"
+      register: disk_format_status
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Format {{ data_disk_path }} as ext4 if not formatted
+      filesystem:
+        fstype: ext4
+        dev: "{{ data_disk_path }}"
+      when: disk_format_status.rc != 0
+
+    - name: Create /mnt/data directory if it does not exist
+      file:
+        path: /mnt/data
+        state: directory
+        mode: '0755'
+
+    - name: Get the UUID of {{ data_disk_path }}
+      command: blkid -s UUID -o value {{ data_disk_path }}
+      register: disk_uuid
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Store expected UUID as a variable
+      set_fact:
+        expected_uuid: "UUID={{ disk_uuid.stdout }}"
+
+    - name: Get current mount source
+      command: findmnt --noheadings --output SOURCE /mnt/data
+      register: current_mount_source
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Get current mount options
+      command: findmnt --noheadings --output OPTIONS /mnt/data
+      register: current_mount_options
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Debug mount status and options
+      debug:
+        msg: "Current mount source: {{ current_mount_source.stdout }}, options: {{ current_mount_options.stdout }}"
+
+    - name: Mount /dev/nvme0n1 to /mnt/data only if needed
+      when: 
+        - current_mount_source.stdout | trim != expected_uuid
+        - "'defaults' not in current_mount_options.stdout"
+      block:
+        - name: Perform Mount Operation
+          mount:
+            path: /mnt/data
+            src: "{{ expected_uuid }}"
+            fstype: ext4
+            opts: "defaults"
+            state: mounted
+
+    - name: Check if /etc/fstab already contains the correct entry
+      shell: grep -E "UUID={{ disk_uuid.stdout }}[[:space:]]+/mnt/data[[:space:]]+ext4" /etc/fstab
+      register: fstab_check
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Ensure /mnt/data persists in /etc/fstab
+      lineinfile:
+        path: /etc/fstab
+        regexp: "^UUID={{ disk_uuid.stdout }}[[:space:]]+/mnt/data"
+        line: "{{ expected_uuid }} /mnt/data ext4 defaults 0 2"
+        state: present
+      when: fstab_check.rc != 0
+
     - name: Update apt package index
       apt:
         update_cache: yes
@@ -66,32 +166,6 @@
       ignore_errors: yes
       changed_when: false
 
-    - name: Generate password if user does not exist
-      set_fact:
-        eth_user_password: "mandem"
-      when: user_exists.rc != 0
-
-    - name: Display generated password for verification
-      debug:
-        msg: "Generated password for user '{{ eth_user }}': {{ eth_user_password }}"
-      when: user_exists.rc != 0
-
-    - name: Save generated password to a local file
-      copy:
-        content: "Generated password for user '{{ eth_user }}': {{ eth_user_password }}"
-        dest: "{{ local_password_file }}"
-        mode: '0600'
-      when: user_exists.rc != 0
-
-    - name: Create a non-root user with sudo privileges and set generated password
-      user:
-        name: "{{ eth_user }}"
-        shell: /bin/bash
-        create_home: yes
-        groups: sudo
-        password: "{{ eth_user_password | password_hash('sha512') }}"
-      when: user_exists.rc != 0
-
     - name: Ensure all packages are up to date
       apt:
         update_cache: yes
@@ -125,15 +199,10 @@
       loop:
         - autoremove
         - autoclean
-
-    - name: Get current timezone
-      command: "timedatectl show -p Timezone --value"
-      register: current_timezone
-      changed_when: false
-
-    - name: Configure timezone if it differs
-      command: "timedatectl set-timezone {{ timezone }}"
-      when: current_timezone.stdout != timezone
+    
+    - name: Set system timezone
+      timezone:
+        name: "{{ timezone }}"
 
     - name: Verify chrony synchronization source
       command: "chronyc sources"
@@ -160,55 +229,6 @@
         port: 22
         proto: tcp
         comment: 'Allow SSH port'
-
-    - name: Allow Lighthouse HTTP API port 5052
-      ufw:
-        rule: allow
-        port: 5052
-        proto: tcp
-        comment: 'Allow Lighthouse HTTP API port'
-
-    - name: Allow Grafana TCP Port 30000
-      ufw:
-        rule: allow
-        port: 30000
-        proto: tcp
-        comment: 'Allow Grafana TCP port'
-
-    - name: Allow Execution Client TCP Port 30303
-      ufw:
-        rule: allow
-        port: 30303
-        proto: tcp
-        comment: 'Allow execution client TCP port'
-    
-    - name: Allow Execution Client UDP Port 30303
-      ufw:
-        rule: allow
-        port: 30303
-        proto: udp
-        comment: 'Allow execution client UDP port'
-
-    - name: Allow Consensus Client TCP Port 9000
-      ufw:
-        rule: allow
-        port: 9000
-        proto: tcp
-        comment: 'Allow consensus client TCP port'
-
-    - name: Allow Consensus Client UDP Port 9000
-      ufw:
-        rule: allow
-        port: 9000
-        proto: udp
-        comment: 'Allow consensus client UDP port'
-
-    - name: Allow Lighthouse Client Quic Port 9001 (UDP)
-      ufw:
-        rule: allow
-        port: 9001
-        proto: udp
-        comment: 'Allow lighthouse client quic port'
 
     - name: Enable UFW
       ufw:
@@ -244,6 +264,7 @@
         regexp: '^#?PasswordAuthentication'
         line: 'PasswordAuthentication no'
         state: present
+      notify: Restart SSH
 
     - name: Enable SSH key-based authentication
       lineinfile:
@@ -251,6 +272,7 @@
         regexp: '^#?PubkeyAuthentication'
         line: 'PubkeyAuthentication yes'
         state: present
+      notify: Restart SSH
 
     - name: Disable root login over SSH
       lineinfile:
@@ -258,6 +280,7 @@
         regexp: '^#?PermitRootLogin'
         line: 'PermitRootLogin no'
         state: present
+      notify: Restart SSH
 
     - name: Enable automatic security updates
       lineinfile:
@@ -277,37 +300,41 @@
         state: present
         minute: "0"
         hour: "0"
-    
-    - name: Ensure Validator directories exist
-      file:
-        path: "{{ item.path }}"
-        state: directory
-        mode: "{{ item.mode }}"
-        owner: root
-        group: root
-      with_items:
-        - { path: "{{ mount_point }}lighthouse/validators", mode: '0755' }
-        - { path: "{{ mount_point }}lighthouse/validators/keys", mode: '0700' }
-        - { path: "{{ mount_point }}lighthouse/validators/secrets", mode: '0700' }
-        - { path: "{{ mount_point }}siren", mode: '0755' }
-        - { path: "{{ mount_point }}reth", mode: '0755' }
-        - { path: "{{ mount_point }}secrets", mode: '0755' }
-    
-    - name: Generate JWT secret in hex format if not exists
-      shell: "openssl rand -hex 32 | tr -d '\n' > {{ mount_point }}secrets/jwt.hex"
-      args:
-        creates: "{{ mount_point }}secrets/jwt.hex"
-      register: jwt_generation_result
 
-    - name: Display JWT secret generation result
+    - name: Set default value for os_upgrade
+      set_fact:
+        os_upgrade: { "changed": false }
+
+    - name: Check if a new Ubuntu release is available
+      command: do-release-upgrade -c
+      register: os_upgrade_check
+      changed_when: false
+      failed_when: 
+        - os_upgrade_check.rc != 0
+        - "'No new release found' not in os_upgrade_check.stdout"
+        - "'There is no development version of an LTS available' not in os_upgrade_check.stdout"
+      when: upgrade_os
+
+    - name: Debug OS Upgrade Check Output
       debug:
-        msg: "JWT secret generated at {{ mount_point }}secrets/jwt.hex"
-      when: jwt_generation_result is changed
+        msg: "OS Upgrade Check Output: {{ os_upgrade_check.stdout }}"
+      when: upgrade_os and os_upgrade_check is defined
+
+    - name: Upgrade OS to the next Ubuntu release
+      command: do-release-upgrade -f DistUpgradeViewNonInteractive
+      async: 3600
+      poll: 0
+      register: os_upgrade
+      when: 
+       - upgrade_os
+       - "'No new release found' not in os_upgrade_check.stdout"
+       - "'There is no development version of an LTS available' not in os_upgrade_check.stdout"
       
   handlers:
     - name: Reboot system
       reboot:
         msg: "Rebooting to apply updates."
+      when: os_upgrade.changed | default(false)
 
     - name: Restart SSH
       service:
